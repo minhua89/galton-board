@@ -28,6 +28,14 @@
       border-radius: 4px;
     }
     button:hover { background-color: #555; }
+    .slider-group {
+      margin: 10px 0;
+      font-size: 14px;
+    }
+    .slider-group input {
+      width: 200px;
+      vertical-align: middle;
+    }
     canvas {
       background-color: #111;
       display: block;
@@ -81,15 +89,26 @@
       <button id="dropOne">Drop 1 球</button>
       <button id="dropTen">Drop 10 球</button>
       <button id="reset">重置統計</button>
+
+      <!-- 新增滑桿 -->
+      <div class="slider-group">
+        <label>向左機率: <span id="leftVal">0.50</span></label><br>
+        <input type="range" id="leftProb" min="0" max="1" step="0.01" value="0.5">
+      </div>
+      <div class="slider-group">
+        <label>向右機率: <span id="rightVal">0.50</span></label><br>
+        <input type="range" id="rightProb" min="0" max="1" step="0.01" value="0.5">
+      </div>
     </div>
+
     <canvas id="board" width="600" height="400"></canvas>
     <canvas id="histogram" width="600" height="200"></canvas>
     <div id="binLabels"></div>
-    <!-- 統計數據區 -->
+
     <div id="stats">
       總球數: 0   平均槽位: 0.00   變異數: 0.00
     </div>
-    <!-- 機率對照表 -->
+
     <table id="probTable">
       <thead>
         <tr>
@@ -104,17 +123,17 @@
 
   <script>
     const rows = 10, bins = rows + 1;
-    const board = document.getElementById('board'),
-          bc    = board.getContext('2d');
-    const hist  = document.getElementById('histogram'),
-          hc    = hist.getContext('2d');
+    const board = document.getElementById('board'), bc = board.getContext('2d');
+    const hist  = document.getElementById('histogram'), hc = hist.getContext('2d');
 
-    // 紀錄所有球的路徑與落點計數
+    // 參數與狀態
+    let leftProb  = 0.5,   // 初始向左機率
+        rightProb = 0.5;   // 初始向右機率
     const persistedPaths = [];
     let binCounts = Array(bins).fill(0);
     let busy = false;
 
-    // 建立洞口標籤
+    // 建立槽位標籤
     const binLabels = document.getElementById('binLabels');
     for (let i = 0; i < bins; i++) {
       const d = document.createElement('div');
@@ -124,40 +143,57 @@
       binLabels.appendChild(d);
     }
 
-    // 統計與機率表 DOM
+    // 統計 & 機率表節點
     const statsDiv = document.getElementById('stats');
     const probBody = document.querySelector('#probTable tbody');
 
-    // 參數
+    // 滑桿節點
+    const leftSlider  = document.getElementById('leftProb');
+    const rightSlider = document.getElementById('rightProb');
+    const leftValEl   = document.getElementById('leftVal');
+    const rightValEl  = document.getElementById('rightVal');
+
+    // 同步滑桿與顯示
+    function syncSliders(changed) {
+      if (changed === 'left') {
+        leftProb = parseFloat(leftSlider.value);
+        rightProb = +(1 - leftProb).toFixed(2);
+        rightSlider.value = rightProb;
+      } else {
+        rightProb = parseFloat(rightSlider.value);
+        leftProb = +(1 - rightProb).toFixed(2);
+        leftSlider.value = leftProb;
+      }
+      leftValEl.innerText = leftProb.toFixed(2);
+      rightValEl.innerText = rightProb.toFixed(2);
+    }
+    leftSlider.addEventListener('input', ()=> syncSliders('left'));
+    rightSlider.addEventListener('input', ()=> syncSliders('right'));
+
+    // 畫釘子 + 歷史虛線
     const pegRadius = 3;
     const pegDX = board.width / (rows + 2);
     const pegDY = board.height / (rows + 2);
-
-    // 工具：計算組合數
-    function factorial(n){ return n <= 1 ? 1 : n * factorial(n-1); }
-    function comb(n,k){ return factorial(n) / (factorial(k)*factorial(n-k)); }
-
-    // 畫釘子 + 歷史虛線軌跡
     function clearBoard() {
-      bc.clearRect(0, 0, board.width, board.height);
+      bc.clearRect(0,0,board.width,board.height);
       // 釘子
       bc.fillStyle = '#666';
-      for (let r = 0; r < rows; r++) {
-        const y = pegDY + r * pegDY;
-        for (let j = 0; j <= r; j++) {
+      for (let r=0; r<rows; r++){
+        const y = pegDY + r*pegDY;
+        for (let j=0; j<=r; j++){
           const x = board.width/2 - r*pegDX/2 + j*pegDX;
           bc.beginPath();
-          bc.arc(x, y, pegRadius, 0, Math.PI*2);
+          bc.arc(x,y,pegRadius,0,Math.PI*2);
           bc.fill();
         }
       }
-      // 歷史虛線軌跡
+      // 歷史虛線
       bc.setLineDash([5,5]);
       bc.strokeStyle = '#fff';
       for (const path of persistedPaths) {
         bc.beginPath();
         bc.moveTo(path[0].x, path[0].y);
-        for (let p of path) bc.lineTo(p.x, p.y);
+        for (const p of path) bc.lineTo(p.x,p.y);
         bc.stroke();
       }
       bc.setLineDash([]);
@@ -165,39 +201,35 @@
 
     // 畫直方圖
     function drawHistogram() {
-      hc.clearRect(0, 0, hist.width, hist.height);
-      const maxC = Math.max(...binCounts, 1);
+      hc.clearRect(0,0,hist.width,hist.height);
+      const maxC = Math.max(...binCounts,1);
       const w = hist.width / bins;
       hc.fillStyle = '#0ff';
-      for (let i = 0; i < bins; i++) {
-        const h = (binCounts[i] / maxC) * (hist.height - 20);
-        hc.fillRect(i*w + w*0.1, hist.height - h, w*0.8, h);
+      for (let i=0; i<bins; i++){
+        const h = binCounts[i]/maxC * (hist.height-20);
+        hc.fillRect(i*w+0.1*w, hist.height-h, 0.8*w, h);
       }
       hc.strokeStyle = '#444';
       hc.beginPath();
-      hc.moveTo(0, hist.height-1);
-      hc.lineTo(hist.width, hist.height-1);
+      hc.moveTo(0,hist.height-1);
+      hc.lineTo(hist.width,hist.height-1);
       hc.stroke();
     }
 
     // 更新統計與機率表
+    function factorial(n){ return n<=1?1:n*factorial(n-1) }
+    function comb(n,k){ return factorial(n)/(factorial(k)*factorial(n-k)); }
     function updateStats() {
       const total = binCounts.reduce((a,b)=>a+b,0);
-      const mean = total
-        ? binCounts.reduce((s,c,i)=> s + i*c, 0) / total
-        : 0;
-      const variance = total
-        ? binCounts.reduce((s,c,i)=> s + ((i-mean)**2)*c, 0) / total
-        : 0;
-
-      statsDiv.innerText =
+      const mean = total ? binCounts.reduce((s,c,i)=>s+i*c,0)/total : 0;
+      const variance = total ? binCounts.reduce((s,c,i)=>s+((i-mean)**2)*c,0)/total : 0;
+      statsDiv.innerText = 
         `總球數: ${total}   平均槽位: ${mean.toFixed(2)}   變異數: ${variance.toFixed(2)}`;
 
-      // 重建機率表
       probBody.innerHTML = '';
-      for (let k = 0; k < bins; k++) {
-        const pTheo = comb(rows, k) / Math.pow(2, rows);
-        const pAct  = total ? binCounts[k] / total : 0;
+      for (let k=0; k<bins; k++){
+        const pTheo = comb(rows,k)/2**rows;
+        const pAct  = total ? binCounts[k]/total : 0;
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>${k}</td>
@@ -215,38 +247,37 @@
       setTimeout(() => lbl.classList.remove('flash'), 500);
     }
 
-    // 模擬一顆球落下
+    // 單球動畫
     function simulate(duration, onDone) {
-      // 計算路徑點
       const path = [];
       let x = board.width/2, y = pegDY/2;
       path.push({x,y});
-      for (let r = 0; r < rows; r++) {
+      for (let r=0; r<rows; r++){
         y += pegDY;
-        x += (Math.random()<0.5 ? -1 : 1)*(pegDX/2);
+        // 用 slider 決定左右
+        if (Math.random() < rightProb) x += pegDX/2;
+        else                       x -= pegDX/2;
         path.push({x,y});
       }
       const idx = Math.round((x - (board.width/2 - rows*pegDX/2)) / pegDX);
       const finalX = (board.width/2 - rows*pegDX/2) + idx*pegDX;
-      path.push({ x: finalX, y: board.height - 10 });
+      path.push({x:finalX, y:board.height-10});
 
-      const steps = path.length;
-      const interval = duration / steps;
+      const steps   = path.length;
+      const interval= duration/steps;
       let step = 0;
 
-      const timer = setInterval(() => {
+      const timer = setInterval(()=>{
         clearBoard();
-
-        // 畫當前虛線
+        // 當前虛線
         bc.setLineDash([5,5]);
         bc.strokeStyle = '#fff';
         bc.beginPath();
-        bc.moveTo(path[0].x, path[0].y);
-        for (let i = 1; i <= step; i++) bc.lineTo(path[i].x, path[i].y);
+        bc.moveTo(path[0].x,path[0].y);
+        for (let i=1; i<=step; i++) bc.lineTo(path[i].x,path[i].y);
         bc.stroke();
         bc.setLineDash([]);
-
-        // 畫紅球
+        // 紅球
         const {x:bx,y:by} = path[step];
         bc.fillStyle = '#f00';
         bc.beginPath();
@@ -257,8 +288,7 @@
         if (step >= steps) {
           clearInterval(timer);
           persistedPaths.push(path);
-          // 更新計數
-          const k = Math.min(Math.max(idx,0), bins-1);
+          const k = Math.min(Math.max(idx,0),bins-1);
           binCounts[k]++;
           document.querySelector(`.bin[data-bin="${k}"]`)
                   .innerText = `${k} (${binCounts[k]})`;
@@ -272,28 +302,26 @@
     }
 
     // 綁定按鈕
-    document.getElementById('dropOne').onclick = () => {
-      if (busy) return;
-      busy = true;
+    document.getElementById('dropOne').onclick = ()=>{
+      if (busy) return; busy = true;
       simulate(1000);
     };
-    document.getElementById('dropTen').onclick = () => {
-      if (busy) return;
-      busy = true;
-      let cnt = 0;
-      (function next() {
-        simulate(500, () => {
-          if (++cnt < 10) next();
+    document.getElementById('dropTen').onclick = ()=>{
+      if (busy) return; busy = true;
+      let cnt=0;
+      (function next(){
+        simulate(500, ()=>{
+          if (++cnt<10) next();
         });
       })();
     };
-    document.getElementById('reset').onclick = () => {
+    document.getElementById('reset').onclick = ()=>{
       if (busy) return;
-      persistedPaths.length = 0;
+      persistedPaths.length=0;
       binCounts.fill(0);
-      document.querySelectorAll('.bin').forEach(lbl => {
-        const k = lbl.dataset.bin;
-        lbl.innerText = `${k} (0)`;
+      document.querySelectorAll('.bin').forEach(lbl=>{
+        const k=lbl.dataset.bin;
+        lbl.innerText=`${k} (0)`;
       });
       clearBoard();
       drawHistogram();
@@ -301,6 +329,7 @@
     };
 
     // 初始繪製
+    syncSliders();  // 初始化 slider 顯示
     clearBoard();
     drawHistogram();
     updateStats();
