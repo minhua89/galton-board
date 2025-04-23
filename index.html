@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>Galton Board 模擬器</title>
+  <style>
+    body {
+      background-color: #000;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      text-align: center;
+      margin: 0;
+      padding: 20px;
+    }
+    #container {
+      width: 600px;
+      margin: 0 auto;
+    }
+    h1 { margin-bottom: 10px; }
+    #controls { margin-bottom: 15px; }
+    button {
+      background-color: #333;
+      color: #fff;
+      border: none;
+      padding: 8px 16px;
+      margin: 0 4px;
+      cursor: pointer;
+      border-radius: 4px;
+    }
+    button:hover { background-color: #555; }
+    canvas {
+      background-color: #111;
+      display: block;
+      margin: 0 auto;
+      border: 1px solid #222;
+    }
+    #binLabels {
+      display: flex;
+      margin-top: 8px;
+    }
+    .bin {
+      flex: 1;
+      text-align: center;
+      font-size: 14px;
+      transition: color .3s;
+    }
+    .flash {
+      animation: flashAnim .5s ease;
+    }
+    @keyframes flashAnim {
+      0%,100% { color: #f00; }
+      50%    { color: #fff; }
+    }
+    #stats {
+      margin-top: 20px;
+      color: #0ff;
+      text-align: left;
+      width: 600px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    #probTable {
+      width: 600px;
+      margin: 10px auto;
+      border-collapse: collapse;
+      text-align: center;
+    }
+    #probTable th, #probTable td {
+      border: 1px solid #444;
+      padding: 4px;
+    }
+    #probTable th {
+      background-color: #222;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <h1>Galton Board 模擬器</h1>
+    <div id="controls">
+      <button id="dropOne">Drop 1 球</button>
+      <button id="dropTen">Drop 10 球</button>
+      <button id="reset">重置統計</button>
+    </div>
+    <canvas id="board" width="600" height="400"></canvas>
+    <canvas id="histogram" width="600" height="200"></canvas>
+    <div id="binLabels"></div>
+    <!-- 統計數據區 -->
+    <div id="stats">
+      總球數: 0   平均槽位: 0.00   變異數: 0.00
+    </div>
+    <!-- 機率對照表 -->
+    <table id="probTable">
+      <thead>
+        <tr>
+          <th>槽位 k</th>
+          <th>理論機率<br><small> C(10,k) / 2¹⁰ </small></th>
+          <th>實際機率</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <script>
+    const rows = 10, bins = rows + 1;
+    const board = document.getElementById('board'),
+          bc    = board.getContext('2d');
+    const hist  = document.getElementById('histogram'),
+          hc    = hist.getContext('2d');
+
+    // 紀錄所有球的路徑與落點計數
+    const persistedPaths = [];
+    let binCounts = Array(bins).fill(0);
+    let busy = false;
+
+    // 建立洞口標籤
+    const binLabels = document.getElementById('binLabels');
+    for (let i = 0; i < bins; i++) {
+      const d = document.createElement('div');
+      d.className = 'bin';
+      d.dataset.bin = i;
+      d.innerText = `${i} (0)`;
+      binLabels.appendChild(d);
+    }
+
+    // 統計與機率表 DOM
+    const statsDiv = document.getElementById('stats');
+    const probBody = document.querySelector('#probTable tbody');
+
+    // 參數
+    const pegRadius = 3;
+    const pegDX = board.width / (rows + 2);
+    const pegDY = board.height / (rows + 2);
+
+    // 工具：計算組合數
+    function factorial(n){ return n <= 1 ? 1 : n * factorial(n-1); }
+    function comb(n,k){ return factorial(n) / (factorial(k)*factorial(n-k)); }
+
+    // 畫釘子 + 歷史虛線軌跡
+    function clearBoard() {
+      bc.clearRect(0, 0, board.width, board.height);
+      // 釘子
+      bc.fillStyle = '#666';
+      for (let r = 0; r < rows; r++) {
+        const y = pegDY + r * pegDY;
+        for (let j = 0; j <= r; j++) {
+          const x = board.width/2 - r*pegDX/2 + j*pegDX;
+          bc.beginPath();
+          bc.arc(x, y, pegRadius, 0, Math.PI*2);
+          bc.fill();
+        }
+      }
+      // 歷史虛線軌跡
+      bc.setLineDash([5,5]);
+      bc.strokeStyle = '#fff';
+      for (const path of persistedPaths) {
+        bc.beginPath();
+        bc.moveTo(path[0].x, path[0].y);
+        for (let p of path) bc.lineTo(p.x, p.y);
+        bc.stroke();
+      }
+      bc.setLineDash([]);
+    }
+
+    // 畫直方圖
+    function drawHistogram() {
+      hc.clearRect(0, 0, hist.width, hist.height);
+      const maxC = Math.max(...binCounts, 1);
+      const w = hist.width / bins;
+      hc.fillStyle = '#0ff';
+      for (let i = 0; i < bins; i++) {
+        const h = (binCounts[i] / maxC) * (hist.height - 20);
+        hc.fillRect(i*w + w*0.1, hist.height - h, w*0.8, h);
+      }
+      hc.strokeStyle = '#444';
+      hc.beginPath();
+      hc.moveTo(0, hist.height-1);
+      hc.lineTo(hist.width, hist.height-1);
+      hc.stroke();
+    }
+
+    // 更新統計與機率表
+    function updateStats() {
+      const total = binCounts.reduce((a,b)=>a+b,0);
+      const mean = total
+        ? binCounts.reduce((s,c,i)=> s + i*c, 0) / total
+        : 0;
+      const variance = total
+        ? binCounts.reduce((s,c,i)=> s + ((i-mean)**2)*c, 0) / total
+        : 0;
+
+      statsDiv.innerText =
+        `總球數: ${total}   平均槽位: ${mean.toFixed(2)}   變異數: ${variance.toFixed(2)}`;
+
+      // 重建機率表
+      probBody.innerHTML = '';
+      for (let k = 0; k < bins; k++) {
+        const pTheo = comb(rows, k) / Math.pow(2, rows);
+        const pAct  = total ? binCounts[k] / total : 0;
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${k}</td>
+          <td>C(${rows},${k})/2^${rows} = ${pTheo.toFixed(4)}</td>
+          <td>${pAct.toFixed(4)}</td>
+        `;
+        probBody.appendChild(tr);
+      }
+    }
+
+    // Label 閃爍
+    function flashLabel(idx) {
+      const lbl = document.querySelector(`.bin[data-bin="${idx}"]`);
+      lbl.classList.add('flash');
+      setTimeout(() => lbl.classList.remove('flash'), 500);
+    }
+
+    // 模擬一顆球落下
+    function simulate(duration, onDone) {
+      // 計算路徑點
+      const path = [];
+      let x = board.width/2, y = pegDY/2;
+      path.push({x,y});
+      for (let r = 0; r < rows; r++) {
+        y += pegDY;
+        x += (Math.random()<0.5 ? -1 : 1)*(pegDX/2);
+        path.push({x,y});
+      }
+      const idx = Math.round((x - (board.width/2 - rows*pegDX/2)) / pegDX);
+      const finalX = (board.width/2 - rows*pegDX/2) + idx*pegDX;
+      path.push({ x: finalX, y: board.height - 10 });
+
+      const steps = path.length;
+      const interval = duration / steps;
+      let step = 0;
+
+      const timer = setInterval(() => {
+        clearBoard();
+
+        // 畫當前虛線
+        bc.setLineDash([5,5]);
+        bc.strokeStyle = '#fff';
+        bc.beginPath();
+        bc.moveTo(path[0].x, path[0].y);
+        for (let i = 1; i <= step; i++) bc.lineTo(path[i].x, path[i].y);
+        bc.stroke();
+        bc.setLineDash([]);
+
+        // 畫紅球
+        const {x:bx,y:by} = path[step];
+        bc.fillStyle = '#f00';
+        bc.beginPath();
+        bc.arc(bx, by, 6, 0, Math.PI*2);
+        bc.fill();
+
+        step++;
+        if (step >= steps) {
+          clearInterval(timer);
+          persistedPaths.push(path);
+          // 更新計數
+          const k = Math.min(Math.max(idx,0), bins-1);
+          binCounts[k]++;
+          document.querySelector(`.bin[data-bin="${k}"]`)
+                  .innerText = `${k} (${binCounts[k]})`;
+          flashLabel(k);
+          drawHistogram();
+          updateStats();
+          busy = false;
+          onDone && onDone();
+        }
+      }, interval);
+    }
+
+    // 綁定按鈕
+    document.getElementById('dropOne').onclick = () => {
+      if (busy) return;
+      busy = true;
+      simulate(1000);
+    };
+    document.getElementById('dropTen').onclick = () => {
+      if (busy) return;
+      busy = true;
+      let cnt = 0;
+      (function next() {
+        simulate(500, () => {
+          if (++cnt < 10) next();
+        });
+      })();
+    };
+    document.getElementById('reset').onclick = () => {
+      if (busy) return;
+      persistedPaths.length = 0;
+      binCounts.fill(0);
+      document.querySelectorAll('.bin').forEach(lbl => {
+        const k = lbl.dataset.bin;
+        lbl.innerText = `${k} (0)`;
+      });
+      clearBoard();
+      drawHistogram();
+      updateStats();
+    };
+
+    // 初始繪製
+    clearBoard();
+    drawHistogram();
+    updateStats();
+  </script>
+</body>
+</html>
